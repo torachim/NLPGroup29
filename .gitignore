@@ -1,0 +1,4 @@
+venv/
+
+data/processed/test.csv
+data/processed/train.csv
