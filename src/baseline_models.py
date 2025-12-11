@@ -4,11 +4,9 @@ from collections import Counter
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import classification_report, f1_score
-from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 
 # --- Taxonomy Definition ---
-# needed for logic: distinct evasion -> same clarity parent
 TAXONOMY_MAP = {
     "Explicit": "Clear Reply",
     "Implicit": "Ambivalent",
@@ -21,140 +19,104 @@ TAXONOMY_MAP = {
     "Clarification": "Clear Non-Reply"
 }
 
-# --- Voting Logic ---
+# --- Voting Logic (Only for Test Set) ---
 def resolve_evasion_label(row):
-    # get votes from 3 annotators
-    # fill nan with empty string just in case
+    # gather votes
     votes = [
         str(row.get('annotator1', '')).strip(),
         str(row.get('annotator2', '')).strip(),
         str(row.get('annotator3', '')).strip()
     ]
-    
-    # filter out empty votes or 'nan'
+    # filter bad values
     votes = [v for v in votes if v and v.lower() != 'nan' and v != 'None']
     
     if not votes:
-        # fallback if no annotators: use provided label or default
-        return row.get('evasion_label', 'Explicit')
+        return "Explicit" # Fallback
 
     counts = Counter(votes)
     most_common = counts.most_common()
     
-    # case 1: majority vote (2 or 3 agree)
-    # e.g., [('Dodging', 2), ('General', 1)] -> Dodging
+    # 1. Majority Vote (>=2)
     if most_common[0][1] >= 2:
         return most_common[0][0]
     
-    # case 2: 3 different votes (1 vs 1 vs 1)
-    # check if they belong to same clarity parent
+    # 2. Clarity Parent Vote
+    # if 3 different labels, check if 2 belong to same Clarity class
     parents = [TAXONOMY_MAP.get(v, 'Unknown') for v in votes]
     parent_counts = Counter(parents)
-    
-    # check if a clarity parent has majority (>=2)
-    # e.g. votes: Dodging(Amb), General(Amb), Explicit(Clear)
-    # parent counts: Ambivalent: 2, Clear: 1
-    # winner: Ambivalent
-    best_parent = parent_counts.most_common(0)[0][0] # get winner parent
+    best_parent = parent_counts.most_common(1)[0][0]
     
     if parent_counts[best_parent] >= 2:
-        # pick the first evasion label that matches this parent
+        # take the first label that matches this parent
         for v in votes:
             if TAXONOMY_MAP.get(v) == best_parent:
                 return v
                 
-    # case 3: total chaos or fallback
-    # just take annotator 1 (primary)
+    # 3. Fallback: Primary Annotator
     return votes[0]
 
 def map_predictions(evasion_preds):
     return [TAXONOMY_MAP.get(label, "Ambivalent") for label in evasion_preds]
 
-# --- Main Pipeline ---
 def main():
-    print("loading training data...")
-    # we only use train.csv for this phase
-    # we split it internally
-    df = pd.read_csv("data/processed/train.csv")
+    print("--- Loading Data ---")
+    train_df = pd.read_csv("data/processed/train.csv").fillna("")
+    test_df = pd.read_csv("data/processed/test.csv").fillna("")
     
-    # handle nans in text
-    df['clean_answer'] = df['clean_answer'].fillna("")
+    # --- Prepare Training Data ---
+    # Use existing 'evasion_label'
+    print(f"Training on {len(train_df)} samples (using provided labels)...")
+    X_train = train_df['clean_answer']
+    y_train_evasion = train_df['evasion_label']
     
-    # apply democratic voting
-    print("applying democratic voting logic to annotators...")
-    df['final_evasion'] = df.apply(resolve_evasion_label, axis=1)
+    # Filter train data to ensure valid labels
+    mask = y_train_evasion.isin(TAXONOMY_MAP.keys())
+    X_train = X_train[mask]
+    y_train_evasion = y_train_evasion[mask]
     
-    # filter invalid labels just in case
-    df = df[df['final_evasion'].isin(TAXONOMY_MAP.keys())]
+    # creating clarity labels from evasion labels for direct model
+    y_train_clarity = [TAXONOMY_MAP[l] for l in y_train_evasion]
+
+    # --- Prepare Test Data ---
+    # Apply Voting Logic to Annotators
+    print(f"Testing on {len(test_df)} samples (applying voting logic)...")
+    test_df['final_evasion'] = test_df.apply(resolve_evasion_label, axis=1)
     
-    print(f"data shape after label resolution: {df.shape}")
-    
-    # features and targets
-    X = df['clean_answer']
-    y_clarity = df['clarity_label']
-    y_evasion = df['final_evasion']
-    
-    # split 80/20
-    # stratify by evasion label to ensure rare classes are in both sets
-    print("splitting 80/20 train/val...")
-    X_train, X_val, y_ev_train, y_ev_val = train_test_split(
-        X, y_evasion, test_size=0.2, random_state=42, stratify=y_evasion
-    )
-    
-    # recreate clarity labels for split
-    # we derive them from the split evasion labels to be safe
-    y_cl_train = [TAXONOMY_MAP[l] for l in y_ev_train]
-    y_cl_val = [TAXONOMY_MAP[l] for l in y_ev_val]
-    
-    # --- 1. Direct Baseline (3 classes) ---
-    print("\n[Baseline 1] Training Direct Logistic Regression (3-class)...")
+    X_test = test_df['clean_answer']
+    y_test_evasion = test_df['final_evasion']
+    y_test_clarity = [TAXONOMY_MAP.get(l, "Ambivalent") for l in y_test_evasion]
+
+    # --- 1. Direct Baseline ---
+    print("\n[Baseline 1] Direct Logistic Regression (3-class)...")
     direct_pipe = Pipeline([
         ('tfidf', TfidfVectorizer(max_features=5000, ngram_range=(1,2))),
         ('clf', LogisticRegression(class_weight='balanced', max_iter=1000, n_jobs=-1))
     ])
     
-    direct_pipe.fit(X_train, y_cl_train)
-    direct_preds = direct_pipe.predict(X_val)
+    direct_pipe.fit(X_train, y_train_clarity)
+    direct_preds = direct_pipe.predict(X_test)
     
-    print(">>> Results Direct Baseline (Clarity Level):")
-    print(classification_report(y_cl_val, direct_preds))
-    f1_direct = f1_score(y_cl_val, direct_preds, average='macro')
-    print(f"Macro F1: {f1_direct:.4f}")
+    f1_direct = f1_score(y_test_clarity, direct_preds, average='macro')
+    print(f"Direct Macro F1: {f1_direct:.4f}")
     
-    # --- 2. Hierarchical Baseline (9 classes -> 3 classes) ---
-    print("\n[Baseline 2] Training Hierarchical Logistic Regression (9-class)...")
+    # --- 2. Hierarchical Baseline ---
+    print("\n[Baseline 2] Hierarchical Logistic Regression (9-class)...")
     hier_pipe = Pipeline([
         ('tfidf', TfidfVectorizer(max_features=5000, ngram_range=(1,2))),
         ('clf', LogisticRegression(class_weight='balanced', max_iter=1000, n_jobs=-1))
     ])
     
-    # train on 9 classes
-    hier_pipe.fit(X_train, y_ev_train)
-    
-    # predict 9 classes
-    evasion_preds = hier_pipe.predict(X_val)
-    
-    # map to 3 classes
+    hier_pipe.fit(X_train, y_train_evasion)
+    evasion_preds = hier_pipe.predict(X_test)
     mapped_preds = map_predictions(evasion_preds)
     
-    print(">>> Results Hierarchical Baseline (Clarity Level):")
-    print(classification_report(y_cl_val, mapped_preds))
-    f1_hier = f1_score(y_cl_val, mapped_preds, average='macro')
-    print(f"Macro F1 (Clarity Mapped): {f1_hier:.4f}")
+    f1_hier = f1_score(y_test_clarity, mapped_preds, average='macro')
+    print(f"Hierarchical Macro F1: {f1_hier:.4f}")
     
-    # extra: evaluate evasion level (internal check)
-    print("\n>>> Internal Check: Evasion Level Performance (9-class):")
-    print(classification_report(y_ev_val, evasion_preds))
-    
-    # compare
-    print("\n=== Final Comparison ===")
-    print(f"Direct F1:       {f1_direct:.4f}")
-    print(f"Hierarchical F1: {f1_hier:.4f}")
-    
-    if f1_hier > f1_direct:
-        print("Hypothesis Supported: Hierarchical approach is better.")
-    else:
-        print("Hypothesis Not Supported (for Baseline): Direct approach is better/equal.")
+    # Compare
+    print("\n=== Final Results ===")
+    print(f"Direct:       {f1_direct:.4f}")
+    print(f"Hierarchical: {f1_hier:.4f}")
 
 if __name__ == "__main__":
     main()
