@@ -3,11 +3,26 @@ from torch.utils.data import Dataset
 import pandas as pd
 import numpy as np
 from collections import Counter
+from sklearn.model_selection import train_test_split
 
-# --- Mappings ---
+# --- Original Mappings (k=9) ---
 EVASION_MAP = {
     "Explicit": 0, "Dodging": 1, "Implicit": 2, "General": 3, "Deflection": 4,
     "Declining to answer": 5, "Claims ignorance": 6, "Clarification": 7, "Partial/half-answer": 8
+}
+
+# --- Reduced Mappings (k=5) ---
+# Grouping semantically similar classes based on Methodology Goal 3
+REDUCED_EVASION_MAP = {
+    "Explicit": 0,              # Keeps its own class
+    "Dodging": 1,               # Group 1: Active Evasion (Dodge/Deflect)
+    "Deflection": 1,
+    "Implicit": 2,              # Group 2: Vague/Indirect (Implicit/General)
+    "General": 2,
+    "Partial/half-answer": 3,   # Group 3: Partial info
+    "Clarification": 3,
+    "Declining to answer": 4,   # Group 4: Refusal
+    "Claims ignorance": 4
 }
 
 CLARITY_MAP = {
@@ -21,7 +36,6 @@ TAXONOMY_PARENTS = {
     "Declining to answer": "Clear Non-Reply", "Claims ignorance": "Clear Non-Reply", "Clarification": "Clear Non-Reply"
 }
 
-# --- Voting Logic ---
 def resolve_evasion_label(row):
     votes = [str(row.get(f'annotator{i}', '')).strip() for i in range(1, 4)]
     votes = [v for v in votes if v and v.lower() != 'nan' and v != 'None']
@@ -43,39 +57,33 @@ def resolve_evasion_label(row):
             
     return votes[0]
 
-# --- Dataset Class ---
 class ClarityDataset(Dataset):
-    def __init__(self, df, tokenizer, max_len=512):
+    def __init__(self, df, tokenizer, max_len=512, use_reduced=False):
         self.df = df
         self.tokenizer = tokenizer
         self.max_len = max_len
+        self.use_reduced = use_reduced
 
     def __len__(self):
         return len(self.df)
 
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        
-        # input
         text = f"{row['question']} {self.tokenizer.sep_token} {row['clean_answer']}"
         
         encoding = self.tokenizer.encode_plus(
-            text,
-            add_special_tokens=True,
-            max_length=self.max_len,
-            padding='max_length',
-            truncation=True,
-            return_attention_mask=True,
-            return_tensors='pt',
+            text, add_special_tokens=True, max_length=self.max_len,
+            padding='max_length', truncation=True, return_attention_mask=True, return_tensors='pt',
         )
         
-        # targets
-        # we assume the dataframe already has 'final_label_str' computed
         label_str = row['final_label_str']
         
-        # map to ids
-        e_id = EVASION_MAP.get(label_str, 0)
-        # derive clarity from evasion to be consistent
+        # LOGIC SWITCH: 9 classes vs 5 classes
+        if self.use_reduced:
+            e_id = REDUCED_EVASION_MAP.get(label_str, 0)
+        else:
+            e_id = EVASION_MAP.get(label_str, 0)
+            
         c_str = TAXONOMY_PARENTS.get(label_str, "Ambivalent")
         c_id = CLARITY_MAP.get(c_str, 1)
 
@@ -86,27 +94,20 @@ class ClarityDataset(Dataset):
             'evasion_labels': torch.tensor(e_id, dtype=torch.long)
         }
 
-# --- Loader Helper ---
-def get_datasets(train_path, test_path, tokenizer):
-    # 1. Load Train
-    print("loading train data...")
+def get_datasets(train_path, test_path, tokenizer, use_reduced=False):
+    # Train
+    print(f"loading train data (Reduced={use_reduced})...")
     train_df = pd.read_csv(train_path).fillna("")
-    # For train, we trust the provided label
     train_df['final_label_str'] = train_df['evasion_label']
-    # filter invalid
     train_df = train_df[train_df['final_label_str'].isin(EVASION_MAP.keys())]
     
-    # 2. Load Test
-    print("loading test data (with voting)...")
+    # Test
+    print(f"loading test data (Reduced={use_reduced})...")
     test_df = pd.read_csv(test_path).fillna("")
-    # For test, we apply voting
     test_df['final_label_str'] = test_df.apply(resolve_evasion_label, axis=1)
-    # filter invalid
     test_df = test_df[test_df['final_label_str'].isin(EVASION_MAP.keys())]
     
-    print(f"Train size: {len(train_df)} | Test size: {len(test_df)}")
-    
-    train_ds = ClarityDataset(train_df, tokenizer)
-    test_ds = ClarityDataset(test_df, tokenizer)
+    train_ds = ClarityDataset(train_df, tokenizer, use_reduced=use_reduced)
+    test_ds = ClarityDataset(test_df, tokenizer, use_reduced=use_reduced)
     
     return train_ds, test_ds
