@@ -3,8 +3,14 @@ import numpy as np
 from collections import Counter
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import classification_report, f1_score
 from sklearn.pipeline import Pipeline
+from sklearn.model_selection import train_test_split
+import sys
+import os
+
+# Add src to path
+sys.path.append(os.getcwd())
+from src.evaluation import get_detailed_metrics
 
 # --- Taxonomy Definition ---
 TAXONOMY_MAP = {
@@ -19,43 +25,36 @@ TAXONOMY_MAP = {
     "Clarification": "Clear Non-Reply"
 }
 
-# --- Voting Logic (Only for Test Set) ---
+CLARITY_LABELS = ["Clear Reply", "Ambivalent", "Clear Non-Reply"]
+
+# --- Voting Logic ---
 def resolve_evasion_label(row):
-    # gather votes
     votes = [
         str(row.get('annotator1', '')).strip(),
         str(row.get('annotator2', '')).strip(),
         str(row.get('annotator3', '')).strip()
     ]
-    # filter bad values
     votes = [v for v in votes if v and v.lower() != 'nan' and v != 'None']
     
-    if not votes:
-        return "Explicit" # Fallback
+    if not votes: return "Explicit"
 
     counts = Counter(votes)
     most_common = counts.most_common()
     
-    # 1. Majority Vote (>=2)
-    if most_common[0][1] >= 2:
-        return most_common[0][0]
+    if most_common[0][1] >= 2: return most_common[0][0]
     
-    # 2. Clarity Parent Vote
-    # if 3 different labels, check if 2 belong to same Clarity class
     parents = [TAXONOMY_MAP.get(v, 'Unknown') for v in votes]
     parent_counts = Counter(parents)
     best_parent = parent_counts.most_common(1)[0][0]
     
     if parent_counts[best_parent] >= 2:
-        # take the first label that matches this parent
         for v in votes:
-            if TAXONOMY_MAP.get(v) == best_parent:
-                return v
+            if TAXONOMY_MAP.get(v) == best_parent: return v
                 
-    # 3. Fallback: Primary Annotator
     return votes[0]
 
 def map_predictions(evasion_preds):
+    # Maps 9 evasion labels -> 3 clarity labels
     return [TAXONOMY_MAP.get(label, "Ambivalent") for label in evasion_preds]
 
 def main():
@@ -63,31 +62,30 @@ def main():
     train_df = pd.read_csv("data/processed/train.csv").fillna("")
     test_df = pd.read_csv("data/processed/test.csv").fillna("")
     
-    # --- Prepare Training Data ---
-    # Use existing 'evasion_label'
-    print(f"Training on {len(train_df)} samples (using provided labels)...")
+    # Prepare Train (Use provided label)
+    print(f"Training set: {len(train_df)} samples")
     X_train = train_df['clean_answer']
     y_train_evasion = train_df['evasion_label']
     
-    # Filter train data to ensure valid labels
     mask = y_train_evasion.isin(TAXONOMY_MAP.keys())
     X_train = X_train[mask]
     y_train_evasion = y_train_evasion[mask]
-    
-    # creating clarity labels from evasion labels for direct model
     y_train_clarity = [TAXONOMY_MAP[l] for l in y_train_evasion]
 
-    # --- Prepare Test Data ---
-    # Apply Voting Logic to Annotators
-    print(f"Testing on {len(test_df)} samples (applying voting logic)...")
+    # Prepare Test (Use Voting Logic)
+    print(f"Test set: {len(test_df)} samples (applying voting)...")
     test_df['final_evasion'] = test_df.apply(resolve_evasion_label, axis=1)
     
     X_test = test_df['clean_answer']
     y_test_evasion = test_df['final_evasion']
     y_test_clarity = [TAXONOMY_MAP.get(l, "Ambivalent") for l in y_test_evasion]
 
-    # --- 1. Direct Baseline ---
-    print("\n[Baseline 1] Direct Logistic Regression (3-class)...")
+    # ---------------------------------------------------------
+    # 1. Direct Baseline (Input -> 3 Classes)
+    # ---------------------------------------------------------
+    print("\n" + "="*50)
+    print("[Baseline 1] Direct Logistic Regression (3-class)")
+    print("="*50)
     direct_pipe = Pipeline([
         ('tfidf', TfidfVectorizer(max_features=5000, ngram_range=(1,2))),
         ('clf', LogisticRegression(class_weight='balanced', max_iter=1000, n_jobs=-1))
@@ -96,27 +94,53 @@ def main():
     direct_pipe.fit(X_train, y_train_clarity)
     direct_preds = direct_pipe.predict(X_test)
     
-    f1_direct = f1_score(y_test_clarity, direct_preds, average='macro')
-    print(f"Direct Macro F1: {f1_direct:.4f}")
-    
-    # --- 2. Hierarchical Baseline ---
-    print("\n[Baseline 2] Hierarchical Logistic Regression (9-class)...")
+    metrics_direct, report_direct = get_detailed_metrics(y_test_clarity, direct_preds, prefix="Direct_")
+    print(report_direct)
+    print(f"Macro F1: {metrics_direct['Direct_Macro_F1']:.4f}")
+
+    # ---------------------------------------------------------
+    # 2. Hierarchical Baseline (Input -> 9 Classes -> Mapped to 3)
+    # ---------------------------------------------------------
+    print("\n" + "="*50)
+    print("[Baseline 2] Hierarchical Logistic Regression")
+    print("="*50)
     hier_pipe = Pipeline([
         ('tfidf', TfidfVectorizer(max_features=5000, ngram_range=(1,2))),
         ('clf', LogisticRegression(class_weight='balanced', max_iter=1000, n_jobs=-1))
     ])
     
+    # Train on Evasion Labels
     hier_pipe.fit(X_train, y_train_evasion)
-    evasion_preds = hier_pipe.predict(X_test)
-    mapped_preds = map_predictions(evasion_preds)
     
-    f1_hier = f1_score(y_test_clarity, mapped_preds, average='macro')
-    print(f"Hierarchical Macro F1: {f1_hier:.4f}")
+    # Predict Evasion Labels
+    raw_evasion_preds = hier_pipe.predict(X_test)
     
-    # Compare
-    print("\n=== Final Results ===")
-    print(f"Direct:       {f1_direct:.4f}")
-    print(f"Hierarchical: {f1_hier:.4f}")
+    # Map to Clarity Labels
+    mapped_clarity_preds = map_predictions(raw_evasion_preds)
+    
+    # Eval 2a: Mapped Clarity Performance (The most important one!)
+    print(">>> [2a] Mapped Clarity Performance (Evasion -> Clarity)")
+    metrics_hier, report_hier = get_detailed_metrics(y_test_clarity, mapped_clarity_preds, prefix="Hier_")
+    print(report_hier)
+    print(f"Macro F1 (Mapped): {metrics_hier['Hier_Macro_F1']:.4f}")
+
+    # Eval 2b: Raw Evasion Performance (Internal Check)
+    print("\n>>> [2b] Raw Evasion Performance (9 classes - Internal Check)")
+    _, report_raw = get_detailed_metrics(y_test_evasion, raw_evasion_preds)
+    print(report_raw)
+
+    # ---------------------------------------------------------
+    # Summary Comparison
+    # ---------------------------------------------------------
+    print("\n=== FINAL COMPARISON (Clarity Task) ===")
+    print(f"Direct Approach F1:       {metrics_direct['Direct_Macro_F1']:.4f}")
+    print(f"Hierarchical Approach F1: {metrics_hier['Hier_Macro_F1']:.4f}")
+    
+    diff = metrics_hier['Hier_Macro_F1'] - metrics_direct['Direct_Macro_F1']
+    if diff > 0:
+        print(f"RESULT: Hierarchical WINS by +{diff:.4f}")
+    else:
+        print(f"RESULT: Direct WINS by +{abs(diff):.4f}")
 
 if __name__ == "__main__":
     main()
