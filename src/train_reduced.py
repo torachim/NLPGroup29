@@ -14,7 +14,7 @@ from src.model import SingleHeadXLNet
 from src.evaluation import get_detailed_metrics
 
 BATCH_SIZE = 8
-EPOCHS = 5
+EPOCHS = 15
 LR = 2e-5
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SAVE_PATH = "models/xlnet_reduced_k5.pt"

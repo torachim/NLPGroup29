@@ -16,7 +16,7 @@ from src.evaluation import get_detailed_metrics
 
 # --- CONFIG ---
 BATCH_SIZE = 8
-EPOCHS = 5
+EPOCHS = 15
 LR = 2e-5
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SAVE_PATH = "models/xlnet_direct_clarity.pt"
