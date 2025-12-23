@@ -6,27 +6,39 @@ from transformers import XLNetTokenizer, get_linear_schedule_with_warmup
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from sklearn.utils.class_weight import compute_class_weight
-from sklearn.metrics import f1_score
 import os
 import sys
 
-# allow imports from current dir
 sys.path.append(os.getcwd())
-
 from src.dataset import get_datasets, EVASION_MAP, CLARITY_MAP
 from src.model import DualHeadXLNet
+from src.evaluation import get_detailed_metrics
 
 # --- Config ---
-BATCH_SIZE = 8        # reduce if oom error
-MAX_LEN = 512         # xlnet handles long seqs
+BATCH_SIZE = 8
+MAX_LEN = 512
 EPOCHS = 5
-LR = 2e-5             # learning rate
+LR = 2e-5
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SAVE_PATH = "models/xlnet_hierarchical.pt"
 
-# --- Helper: Calc Class Weights ---
+# --- Mapping Logic for Tensor IDs ---
+# We need to map Evasion ID (0-8) to Clarity ID (0-2) efficiently
+# Based on EVASION_MAP and CLARITY_MAP in dataset.py
+# Explicit(0)->Clear(0), Dodging(1)->Amb(1), etc.
+ID_MAPPING_TENSOR = torch.tensor([
+    0, # Explicit -> Clear Reply
+    1, # Dodging -> Ambivalent
+    1, # Implicit -> Ambivalent
+    1, # General -> Ambivalent
+    1, # Deflection -> Ambivalent
+    2, # Declining -> Clear Non-Reply
+    2, # Ignorance -> Clear Non-Reply
+    2, # Clarification -> Clear Non-Reply
+    1  # Partial -> Ambivalent
+]).to(DEVICE)
+
 def get_class_weights(df, label_col, mapping):
-    # compute weights for imbalance handling
     labels = df[label_col].map(mapping).values
     classes = np.unique(labels)
     weights = compute_class_weight(class_weight='balanced', classes=classes, y=labels)
@@ -35,40 +47,33 @@ def get_class_weights(df, label_col, mapping):
 def train_epoch(model, loader, optimizer, scheduler, loss_fn_c, loss_fn_e):
     model.train()
     total_loss = 0
-    
     for batch in loader:
-        # move to device
         ids = batch['input_ids'].to(DEVICE)
         mask = batch['attention_mask'].to(DEVICE)
         c_label = batch['clarity_labels'].to(DEVICE)
         e_label = batch['evasion_labels'].to(DEVICE)
         
         optimizer.zero_grad()
-        
-        # forward pass
         c_logits, e_logits = model(ids, mask)
         
-        # calc individual losses
         loss_c = loss_fn_c(c_logits, c_label)
         loss_e = loss_fn_e(e_logits, e_label)
-        
-        # weighted sum (70% evasion, 30% clarity)
-        # as defined in methodology
         loss = (0.3 * loss_c) + (0.7 * loss_e)
         
-        # backward
         loss.backward()
         optimizer.step()
         scheduler.step()
-        
         total_loss += loss.item()
-        
     return total_loss / len(loader)
 
 def eval_model(model, loader):
     model.eval()
-    all_c_true, all_c_pred = [], []
-    all_e_true, all_e_pred = [], []
+    
+    # Containers
+    true_clarity = []
+    true_evasion = []
+    pred_direct_clarity = []
+    pred_raw_evasion = []
     
     with torch.no_grad():
         for batch in loader:
@@ -77,78 +82,77 @@ def eval_model(model, loader):
             
             c_logits, e_logits = model(ids, mask)
             
-            # get predictions
-            c_pred = torch.argmax(c_logits, dim=1).cpu().numpy()
-            e_pred = torch.argmax(e_logits, dim=1).cpu().numpy()
+            # 1. Direct Clarity Prediction
+            c_pred = torch.argmax(c_logits, dim=1)
             
-            all_c_pred.extend(c_pred)
-            all_e_pred.extend(e_pred)
-            all_c_true.extend(batch['clarity_labels'].numpy())
-            all_e_true.extend(batch['evasion_labels'].numpy())
+            # 2. Raw Evasion Prediction
+            e_pred = torch.argmax(e_logits, dim=1)
             
-    # calc macro f1
-    f1_c = f1_score(all_c_true, all_c_pred, average='macro')
-    f1_e = f1_score(all_e_true, all_e_pred, average='macro')
+            # Store on CPU
+            pred_direct_clarity.extend(c_pred.cpu().numpy())
+            pred_raw_evasion.extend(e_pred.cpu().numpy())
+            true_clarity.extend(batch['clarity_labels'].numpy())
+            true_evasion.extend(batch['evasion_labels'].numpy())
+
+    # --- Metrics Calculation ---
     
-    return f1_c, f1_e
+    # A. Direct Clarity Metrics
+    m_direct, _ = get_detailed_metrics(true_clarity, pred_direct_clarity, prefix="Direct_")
+    
+    # B. Mapped Clarity Metrics (Crucial!)
+    # Map raw evasion preds (0-8) to clarity preds (0-2) using numpy map
+    # We can recreate the mapping array on CPU for fast lookup
+    map_arr = np.array([0, 1, 1, 1, 1, 2, 2, 2, 1]) # Index corresponds to Evasion ID
+    pred_mapped_clarity = map_arr[pred_raw_evasion]
+    
+    m_mapped, _ = get_detailed_metrics(true_clarity, pred_mapped_clarity, prefix="Mapped_")
+    
+    # C. Raw Evasion Metrics (Internal)
+    m_evasion, _ = get_detailed_metrics(true_evasion, pred_raw_evasion, prefix="Evasion_")
+    
+    return m_direct, m_mapped, m_evasion
 
 def main():
-    print(f"using device: {DEVICE}")
+    print(f"--- Standard XLNet Training (k=9) ---")
     os.makedirs("models", exist_ok=True)
     
-    # 1. load data
     tokenizer = XLNetTokenizer.from_pretrained('xlnet-base-cased')
-    train_ds, test_ds = get_datasets(
-        "data/processed/train.csv",
-        "data/processed/test.csv",
-        tokenizer
-    )
+    train_ds, test_ds = get_datasets("data/processed/train.csv", "data/processed/test.csv", tokenizer)
     
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
     test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE)
     
-    # 2. setup weights
-    # load df just to calc weights
+    # Weights
     train_df = pd.read_csv("data/processed/train.csv")
     w_clarity = get_class_weights(train_df, 'clarity_label', CLARITY_MAP)
     w_evasion = get_class_weights(train_df, 'evasion_label', EVASION_MAP)
     
-    print(f"Clarity Weights: {w_clarity}")
-    print(f"Evasion Weights: {w_evasion}")
-    
-    # 3. setup model & loss
     model = DualHeadXLNet().to(DEVICE)
-    
-    # weighted cross entropy
     criterion_c = nn.CrossEntropyLoss(weight=w_clarity)
     criterion_e = nn.CrossEntropyLoss(weight=w_evasion)
-    
     optimizer = AdamW(model.parameters(), lr=LR)
-    total_steps = len(train_loader) * EPOCHS
-    scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0, num_training_steps=total_steps)
+    scheduler = get_linear_schedule_with_warmup(optimizer, 0, len(train_loader)*EPOCHS)
     
-    # 4. training loop
-    best_f1 = 0
+    best_mapped_f1 = 0
     
-    print("\n--- Starting Training ---")
     for epoch in range(EPOCHS):
-        # train
-        train_loss = train_epoch(model, train_loader, optimizer, scheduler, criterion_c, criterion_e)
+        loss = train_epoch(model, train_loader, optimizer, scheduler, criterion_c, criterion_e)
         
-        # validate
-        val_f1_c, val_f1_e = eval_model(model, test_loader)
+        # Get all 3 types of metrics
+        m_dir, m_map, m_raw = eval_model(model, test_loader)
         
-        # metric of interest: clarity f1 (primary task)
-        # or average of both? let's track clarity per proposal
-        print(f"Epoch {epoch+1}/{EPOCHS} | Loss: {train_loss:.4f} | Val F1 Clarity: {val_f1_c:.4f} | Val F1 Evasion: {val_f1_e:.4f}")
+        print(f"Epoch {epoch+1} | Loss: {loss:.4f}")
+        print(f"  > Direct Clarity F1: {m_dir['Direct_Macro_F1']:.4f}")
+        print(f"  > Mapped Clarity F1: {m_map['Mapped_Macro_F1']:.4f} (Target Metric)")
+        print(f"  > Raw Evasion F1:    {m_raw['Evasion_Macro_F1']:.4f}")
         
-        # save best
-        if val_f1_c > best_f1:
-            print(f"found new best model! saving to {SAVE_PATH}")
+        # Save based on MAPPED performance (since that's our hypothesis)
+        if m_map['Mapped_Macro_F1'] > best_mapped_f1:
+            print(f"  * New Best Mapped Performance! Saving...")
             torch.save(model.state_dict(), SAVE_PATH)
-            best_f1 = val_f1_c
-            
-    print(f"\nTraining complete. Best Clarity F1: {best_f1:.4f}")
+            best_mapped_f1 = m_map['Mapped_Macro_F1']
+
+    print(f"Done. Best Mapped Clarity F1: {best_mapped_f1:.4f}")
 
 if __name__ == "__main__":
     main()
