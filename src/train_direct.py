@@ -46,8 +46,8 @@ def main():
     
     # 1. Load Data (Mode='clarity')
     train_ds, test_ds, train_df, _ = get_datasets(
-        "data/processed/train.csv", 
-        "data/processed/test.csv", 
+        "data/raw/train.csv", 
+        "data/raw/test.csv", 
         tokenizer, 
         mode='clarity'
     )

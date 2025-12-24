@@ -7,7 +7,6 @@ from sklearn.pipeline import Pipeline
 import sys
 import os
 
-# Add src to path
 sys.path.append(os.getcwd())
 from src.evaluation import get_detailed_metrics
 
@@ -17,8 +16,6 @@ TAXONOMY_MAP = {
     "Dodging": "Ambivalent", "Deflection": "Ambivalent",
     "Declining to answer": "Clear Non-Reply", "Claims ignorance": "Clear Non-Reply", "Clarification": "Clear Non-Reply"
 }
-
-CLARITY_LABELS = ["Clear Reply", "Ambivalent", "Clear Non-Reply"]
 
 def resolve_evasion_label(row):
     votes = [str(row.get(f'annotator{i}', '')).strip() for i in range(1, 4)]
@@ -40,29 +37,33 @@ def map_predictions(evasion_preds):
 
 def main():
     print("--- Loading Data ---")
-    train_df = pd.read_csv("data/processed/train.csv").fillna("")
-    test_df = pd.read_csv("data/processed/test.csv").fillna("")
+    train_path = "data/raw/train.csv"
+    test_path = "data/raw/test.csv"
     
-    # --- Prepare Train ---
-    print(f"Training set: {len(train_df)} samples")
-    # Filter valid evasion labels
+    if not os.path.exists(train_path):
+        print(f"ERROR: File not found at {train_path}.")
+        return
+
+    train_df = pd.read_csv(train_path).fillna("")
+    test_df = pd.read_csv(test_path).fillna("")
+    
+    print(f"Train size: {len(train_df)} | Test size: {len(test_df)}")
+    
+    # Filter valid
     mask = train_df['evasion_label'].isin(TAXONOMY_MAP.keys())
     train_df = train_df[mask]
     
-    X_train = train_df['clean_answer']
+    # --- ADAPTATION: Use 'interview_answer' ---
+    X_train = train_df['interview_answer']
     y_train_evasion = train_df['evasion_label']
-    y_train_clarity = train_df['clarity_label'] # Trust the column!
+    y_train_clarity = train_df['clarity_label']
 
-    # --- Prepare Test ---
-    print(f"Test set: {len(test_df)} samples")
-    # Vote for Evasion
     test_df['final_evasion'] = test_df.apply(resolve_evasion_label, axis=1)
-    
-    X_test = test_df['clean_answer']
+    X_test = test_df['interview_answer']
     y_test_evasion = test_df['final_evasion']
-    y_test_clarity = test_df['clarity_label'] # Trust the column!
+    y_test_clarity = test_df['clarity_label']
 
-    # --- 1. Direct Baseline ---
+    # 1. Direct Baseline
     print("\n[Baseline 1] Direct Logistic Regression (3-class)")
     direct_pipe = Pipeline([
         ('tfidf', TfidfVectorizer(max_features=5000, ngram_range=(1,2))),
@@ -70,28 +71,24 @@ def main():
     ])
     direct_pipe.fit(X_train, y_train_clarity)
     direct_preds = direct_pipe.predict(X_test)
-    
     metrics_direct, report_direct = get_detailed_metrics(y_test_clarity, direct_preds, prefix="Direct_")
     print(report_direct)
 
-    # --- 2. Hierarchical Baseline ---
-    print("\n[Baseline 2] Hierarchical Logistic Regression (9-class -> Mapped)")
+    # 2. Hierarchical Baseline
+    print("\n[Baseline 2] Hierarchical Logistic Regression")
     hier_pipe = Pipeline([
         ('tfidf', TfidfVectorizer(max_features=5000, ngram_range=(1,2))),
         ('clf', LogisticRegression(class_weight='balanced', max_iter=1000, n_jobs=-1))
     ])
     hier_pipe.fit(X_train, y_train_evasion)
-    
     raw_evasion_preds = hier_pipe.predict(X_test)
     mapped_clarity_preds = map_predictions(raw_evasion_preds)
     
-    # Eval Mapped
-    print(">>> Mapped Clarity Performance (Evasion -> Clarity)")
+    print(">>> Mapped Clarity Performance")
     metrics_hier, report_hier = get_detailed_metrics(y_test_clarity, mapped_clarity_preds, prefix="Hier_")
     print(report_hier)
 
-    # Eval Raw Evasion (Just for info)
-    print(">>> Raw Evasion Performance (9 classes)")
+    print(">>> Raw Evasion Performance")
     _, report_raw = get_detailed_metrics(y_test_evasion, raw_evasion_preds)
     print(report_raw)
 

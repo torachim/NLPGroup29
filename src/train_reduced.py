@@ -21,7 +21,7 @@ SAVE_PATH = "models/xlnet_reduced_k5.pt"
 
 # Mapping: 5 Evasion IDs -> 3 Clarity IDs
 # 0:Exp->0(Clear), 1:Active->1(Amb), 2:Vague->1(Amb), 3:Partial->1(Amb), 4:Refusal->2(CNR)
-MAPPING_ARR_K5 = np.array([0, 1, 1, 1, 2])
+MAPPING_ARR_K5 = np.array([0, 1, 1, 2, 2])
 
 def main():
     print("=== STARTING REDUCED TRAINING (k=5) ===")
@@ -29,7 +29,7 @@ def main():
     tokenizer = XLNetTokenizer.from_pretrained('xlnet-base-cased')
     
     # 1. Load Data (Mode='evasion_5')
-    train_ds, test_ds, train_df, _ = get_datasets("data/processed/train.csv", "data/processed/test.csv", tokenizer, mode='evasion_5')
+    train_ds, test_ds, train_df, _ = get_datasets("data/raw/train.csv", "data/raw/test.csv", tokenizer, mode='evasion_5')
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
     test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE)
     

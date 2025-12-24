@@ -30,7 +30,7 @@ def main():
     tokenizer = XLNetTokenizer.from_pretrained('xlnet-base-cased')
     
     # 1. Load Data (Mode='evasion_9')
-    train_ds, test_ds, train_df, _ = get_datasets("data/processed/train.csv", "data/processed/test.csv", tokenizer, mode='evasion_9')
+    train_ds, test_ds, train_df, _ = get_datasets("data/raw/train.csv", "data/raw/test.csv", tokenizer, mode='evasion_9')
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
     test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE)
     

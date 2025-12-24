@@ -1,4 +1,6 @@
 venv/
 
-data/processed/test.csv
-data/processed/train.csv
+data/raw/test.csv
+data/raw/train.csv
+
+src/__pycache__
