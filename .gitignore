@@ -4,3 +4,7 @@ data/raw/test.csv
 data/raw/train.csv
 
 src/__pycache__
+
+.DS_Store
+
+models/
