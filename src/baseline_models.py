@@ -7,7 +7,10 @@ from sklearn.pipeline import Pipeline
 import sys
 import os
 
-sys.path.append(os.getcwd())
+# Add src to path if needed
+if os.getcwd() not in sys.path:
+    sys.path.append(os.getcwd())
+
 from src.evaluation import get_detailed_metrics
 
 TAXONOMY_MAP = {
@@ -16,6 +19,8 @@ TAXONOMY_MAP = {
     "Dodging": "Ambivalent", "Deflection": "Ambivalent",
     "Declining to answer": "Clear Non-Reply", "Claims ignorance": "Clear Non-Reply", "Clarification": "Clear Non-Reply"
 }
+
+TAXONOMY_PARENTS = TAXONOMY_MAP # Alias
 
 def resolve_evasion_label(row):
     votes = [str(row.get(f'annotator{i}', '')).strip() for i in range(1, 4)]
@@ -35,25 +40,23 @@ def resolve_evasion_label(row):
 def map_predictions(evasion_preds):
     return [TAXONOMY_MAP.get(label, "Ambivalent") for label in evasion_preds]
 
-def main():
-    print("--- Loading Data ---")
-    train_path = "data/raw/train.csv"
-    test_path = "data/raw/test.csv"
+def run_baselines(train_path, test_path):
+    """
+    Führt Training und Evaluation durch und gibt die Ergebnisse zurück.
+    """
+    print(f"--- Running Baselines (Train: {train_path}) ---")
     
     if not os.path.exists(train_path):
-        print(f"ERROR: File not found at {train_path}.")
-        return
+        raise FileNotFoundError(f"File not found: {train_path}")
 
     train_df = pd.read_csv(train_path).fillna("")
     test_df = pd.read_csv(test_path).fillna("")
-    
-    print(f"Train size: {len(train_df)} | Test size: {len(test_df)}")
     
     # Filter valid
     mask = train_df['evasion_label'].isin(TAXONOMY_MAP.keys())
     train_df = train_df[mask]
     
-    # --- ADAPTATION: Use 'interview_answer' ---
+    # Prepare Data
     X_train = train_df['interview_answer']
     y_train_evasion = train_df['evasion_label']
     y_train_clarity = train_df['clarity_label']
@@ -63,19 +66,27 @@ def main():
     y_test_evasion = test_df['final_evasion']
     y_test_clarity = test_df['clarity_label']
 
+    results = {}
+
     # 1. Direct Baseline
-    print("\n[Baseline 1] Direct Logistic Regression (3-class)")
+    print("Training Direct Logistic Regression...")
     direct_pipe = Pipeline([
         ('tfidf', TfidfVectorizer(max_features=5000, ngram_range=(1,2))),
         ('clf', LogisticRegression(class_weight='balanced', max_iter=1000, n_jobs=-1))
     ])
     direct_pipe.fit(X_train, y_train_clarity)
     direct_preds = direct_pipe.predict(X_test)
+    
     metrics_direct, report_direct = get_detailed_metrics(y_test_clarity, direct_preds, prefix="Direct_")
-    print(report_direct)
+    results['Direct'] = {
+        'metrics': metrics_direct,
+        'report': report_direct,
+        'y_true': y_test_clarity,
+        'y_pred': direct_preds
+    }
 
     # 2. Hierarchical Baseline
-    print("\n[Baseline 2] Hierarchical Logistic Regression")
+    print("Training Hierarchical Logistic Regression...")
     hier_pipe = Pipeline([
         ('tfidf', TfidfVectorizer(max_features=5000, ngram_range=(1,2))),
         ('clf', LogisticRegression(class_weight='balanced', max_iter=1000, n_jobs=-1))
@@ -84,13 +95,29 @@ def main():
     raw_evasion_preds = hier_pipe.predict(X_test)
     mapped_clarity_preds = map_predictions(raw_evasion_preds)
     
-    print(">>> Mapped Clarity Performance")
     metrics_hier, report_hier = get_detailed_metrics(y_test_clarity, mapped_clarity_preds, prefix="Hier_")
-    print(report_hier)
+    results['Hierarchical'] = {
+        'metrics': metrics_hier,
+        'report': report_hier,
+        'y_true': y_test_clarity,
+        'y_pred': mapped_clarity_preds
+    }
+    
+    return results
 
-    print(">>> Raw Evasion Performance")
-    _, report_raw = get_detailed_metrics(y_test_evasion, raw_evasion_preds)
-    print(report_raw)
+def main():
+    # Standard-Pfade für Terminal-Ausführung
+    train_path = "data/raw/train.csv"
+    test_path = "data/raw/test.csv"
+    
+    try:
+        results = run_baselines(train_path, test_path)
+        print("\n=== Direct Results ===")
+        print(results['Direct']['report'])
+        print("\n=== Hierarchical Results ===")
+        print(results['Hierarchical']['report'])
+    except Exception as e:
+        print(f"Error: {e}")
 
 if __name__ == "__main__":
     main()
