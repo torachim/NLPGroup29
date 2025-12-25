@@ -3,7 +3,8 @@ venv/
 data/raw/test.csv
 data/raw/train.csv
 
-src/__pycache__
+**/__pycache__/
+*.py[cod]
 
 .DS_Store
 
