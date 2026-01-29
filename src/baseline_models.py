@@ -7,7 +7,7 @@ from sklearn.pipeline import Pipeline
 import sys
 import os
 
-# Add src to path if needed
+# add src to path
 if os.getcwd() not in sys.path:
     sys.path.append(os.getcwd())
 
@@ -20,7 +20,7 @@ TAXONOMY_MAP = {
     "Declining to answer": "Clear Non-Reply", "Claims ignorance": "Clear Non-Reply", "Clarification": "Clear Non-Reply"
 }
 
-TAXONOMY_PARENTS = TAXONOMY_MAP # Alias
+TAXONOMY_PARENTS = TAXONOMY_MAP 
 
 def resolve_evasion_label(row):
     votes = [str(row.get(f'annotator{i}', '')).strip() for i in range(1, 4)]
@@ -41,9 +41,7 @@ def map_predictions(evasion_preds):
     return [TAXONOMY_MAP.get(label, "Ambivalent") for label in evasion_preds]
 
 def run_baselines(train_path, test_path):
-    """
-    Führt Training und Evaluation durch und gibt die Ergebnisse zurück.
-    """
+    # runs training and eval, returns results
     print(f"--- Running Baselines (Train: {train_path}) ---")
     
     if not os.path.exists(train_path):
@@ -52,11 +50,11 @@ def run_baselines(train_path, test_path):
     train_df = pd.read_csv(train_path).fillna("")
     test_df = pd.read_csv(test_path).fillna("")
     
-    # Filter valid
+    # filter valid
     mask = train_df['evasion_label'].isin(TAXONOMY_MAP.keys())
     train_df = train_df[mask]
     
-    # Prepare Data
+    # prepare data
     X_train = train_df['interview_answer']
     y_train_evasion = train_df['evasion_label']
     y_train_clarity = train_df['clarity_label']
@@ -68,7 +66,7 @@ def run_baselines(train_path, test_path):
 
     results = {}
 
-    # 1. Direct Baseline
+    # direct baseline
     print("Training Direct Logistic Regression...")
     direct_pipe = Pipeline([
         ('tfidf', TfidfVectorizer(max_features=5000, ngram_range=(1,2))),
@@ -85,7 +83,7 @@ def run_baselines(train_path, test_path):
         'y_pred': direct_preds
     }
 
-    # 2. Hierarchical Baseline
+    # hierarchical baseline
     print("Training Hierarchical Logistic Regression...")
     hier_pipe = Pipeline([
         ('tfidf', TfidfVectorizer(max_features=5000, ngram_range=(1,2))),
@@ -106,7 +104,7 @@ def run_baselines(train_path, test_path):
     return results
 
 def main():
-    # Standard-Pfade für Terminal-Ausführung
+    # default paths
     train_path = "data/raw/train.csv"
     test_path = "data/raw/test.csv"
     

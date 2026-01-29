@@ -19,7 +19,7 @@ LR = 2e-5
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SAVE_PATH = "models/xlnet_reduced_k5.pt"
 
-# Mapping: 5 Evasion IDs -> 3 Clarity IDs
+# map 5 evasion to 3 clarity
 # 0:Exp->0(Clear), 1:Active->1(Amb), 2:Vague->1(Amb), 3:Partial->1(Amb), 4:Refusal->2(CNR)
 MAPPING_ARR_K5 = np.array([0, 1, 1, 2, 2])
 
@@ -28,13 +28,13 @@ def main():
     os.makedirs("models", exist_ok=True)
     tokenizer = XLNetTokenizer.from_pretrained('xlnet-base-cased')
     
-    # 1. Load Data (Mode='evasion_5')
+    # load evasion data
     train_ds, test_ds, train_df, _ = get_datasets("data/raw/train.csv", "data/raw/test.csv", tokenizer, mode='evasion_5')
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
     test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE)
     
-    # 2. Class Imbalance Handling (5 Classes)
-    # Map Training Strings -> 0-4 Integers first
+    # handle class imbalance (5 classes)
+    # map training strings to integers first
     labels_str = train_df['final_evasion_str']
     labels = [EVASION_MAP_5[l] for l in labels_str]
     classes = np.unique(labels)
@@ -42,7 +42,7 @@ def main():
     class_weights = torch.tensor(weights, dtype=torch.float).to(DEVICE)
     print(f"Reduced Evasion Weights (5 classes): {class_weights}")
 
-    # 3. Model (5 Outputs)
+    # model with 5 outputs
     model = SingleHeadXLNet(num_labels=5).to(DEVICE)
     optimizer = AdamW(model.parameters(), lr=LR)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
@@ -54,13 +54,13 @@ def main():
     for epoch in range(EPOCHS):
         print(f"\nEpoch {epoch+1}/{EPOCHS}")
         
-        # Train
+        # train
         model.train()
         train_loss = 0
         for batch in train_loader:
             ids = batch['input_ids'].to(DEVICE)
             mask = batch['attention_mask'].to(DEVICE)
-            labels = batch['labels'].to(DEVICE) # Evasion Labels (0-4)
+            labels = batch['labels'].to(DEVICE) # evasion labels
             
             optimizer.zero_grad()
             logits = model(ids, mask)
@@ -72,7 +72,7 @@ def main():
         
         print(f"  Training Loss: {train_loss/len(train_loader):.4f}")
 
-        # Eval
+        # eval
         model.eval()
         evasion_preds = []
         evasion_trues = []
@@ -84,20 +84,20 @@ def main():
                 mask = batch['attention_mask'].to(DEVICE)
                 logits = model(ids, mask)
                 
-                # Predict 5 classes
+                # predict 5 classes
                 preds = torch.argmax(logits, dim=1).cpu().numpy()
                 evasion_preds.extend(preds)
                 evasion_trues.extend(batch['labels'].numpy())
                 
-                # Truth for Mapping
+                # truth for mapping
                 clarity_trues.extend(batch['clarity_truth'].numpy())
         
-        # --- REPORT 1: Reduced Evasion (Internal Check) ---
+        # report 1: reduced evasion (internal check)
         _, report_raw = get_detailed_metrics(evasion_trues, evasion_preds)
         print("  >>> [Internal] Reduced Evasion Performance (5 Classes):")
         print(report_raw)
 
-        # --- REPORT 2: Mapped Clarity (Hypothesis) ---
+        # report 2: mapped clarity (hypothesis)
         evasion_preds_np = np.array(evasion_preds)
         clarity_preds_mapped = MAPPING_ARR_K5[evasion_preds_np]
         
@@ -105,7 +105,7 @@ def main():
         print("  >>> [Target] Mapped Clarity Performance (Reduced Evasion -> Clarity):")
         print(report_map)
         
-        # Save Best
+        # save best model
         curr_f1 = metrics_map['Macro_F1']
         if curr_f1 > best_mapped_f1:
             print(f"  [+] New Best Reduced Model (F1: {curr_f1:.4f}) -> Saving...")

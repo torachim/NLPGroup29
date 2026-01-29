@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 from collections import Counter
 
-# --- MAPPINGS ---
+# mappings
 EVASION_MAP_9 = {
     "Explicit": 0, "Dodging": 1, "Implicit": 2, "General": 3, "Deflection": 4,
     "Declining to answer": 5, "Claims ignorance": 6, "Clarification": 7, "Partial/half-answer": 8
@@ -37,7 +37,7 @@ TAXONOMY_PARENTS = {
     "Declining to answer": "Clear Non-Reply", "Claims ignorance": "Clear Non-Reply", "Clarification": "Clear Non-Reply"
 }
 
-# --- VOTING LOGIC ---
+# voting logic for disagreements
 def resolve_evasion_vote(row):
     votes = [str(row.get(f'annotator{i}', '')).strip() for i in range(1, 4)]
     votes = [v for v in votes if v and v.lower() != 'nan' and v != 'None' and v != '']
@@ -59,7 +59,7 @@ def resolve_evasion_vote(row):
             
     return votes[0]
 
-# --- DATASET CLASS ---
+# dataset class
 class ClarityDataset(Dataset):
     def __init__(self, df, tokenizer, mode='clarity', max_len=512):
         self.df = df
@@ -73,7 +73,7 @@ class ClarityDataset(Dataset):
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
         
-        # --- ADAPTATION: Use 'question' and 'interview_answer' ---
+        # combine question and answer
         q_text = str(row.get('question', ""))
         a_text = str(row.get('interview_answer', ""))
         
@@ -84,7 +84,7 @@ class ClarityDataset(Dataset):
             padding='max_length', truncation=True, return_attention_mask=True, return_tensors='pt'
         )
         
-        # Target Logic
+        # target label logic
         label_id = 0
         evasion_str = str(row.get('final_evasion_str', 'Explicit'))
         
@@ -96,7 +96,7 @@ class ClarityDataset(Dataset):
         elif self.mode == 'evasion_5':
             label_id = EVASION_MAP_5.get(evasion_str, 0)
 
-        # Ground Truth Clarity (for Eval)
+        # ground truth for eval
         c_truth_str = str(row.get('clarity_label', 'Ambivalent'))
         clarity_truth_id = CLARITY_MAP.get(c_truth_str, 1)
 
@@ -110,12 +110,12 @@ class ClarityDataset(Dataset):
 def get_datasets(train_path, test_path, tokenizer, mode='clarity'):
     print(f"--- Loading Datasets (Mode: {mode}) ---")
     
-    # 1. LOAD TRAIN
+    # load train
     train_df = pd.read_csv(train_path).fillna("")
     train_df['final_evasion_str'] = train_df['evasion_label']
     train_df = train_df[train_df['final_evasion_str'].isin(EVASION_MAP_9.keys())]
 
-    # 2. LOAD TEST
+    # load test
     test_df = pd.read_csv(test_path).fillna("")
     print("Applying Democratic Voting Logic...")
     test_df['final_evasion_str'] = test_df.apply(resolve_evasion_vote, axis=1)

@@ -1,5 +1,3 @@
-# start virtual environment; .\venv\Scripts\Activate.ps1
-
 import pandas as pd
 import os
 from datasets import load_dataset
@@ -7,14 +5,14 @@ from datasets import load_dataset
 def main():
     print("--- Loading Dataset from Hugging Face (Raw) ---")
     
-    # 1. Load
+    # load dataset
     try:
         ds = load_dataset("ailsntua/QEvasion")
     except Exception as e:
         print(f"Error loading dataset: {e}")
         return
 
-    # 2. Convert to Pandas
+    # convert to pandas
     train_df = ds['train'].to_pandas()
     test_df = ds['test'].to_pandas()
     
@@ -22,7 +20,7 @@ def main():
     print(f"Test Shape: {test_df.shape}")
     print(f"Columns: {train_df.columns.tolist()}")
     
-    # 3. Save directly to raw
+    # save to raw
     output_dir = "data/raw"
     os.makedirs(output_dir, exist_ok=True)
     

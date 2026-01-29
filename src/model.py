@@ -13,7 +13,7 @@ class SingleHeadXLNet(nn.Module):
         outputs = self.xlnet(input_ids=input_ids, attention_mask=attention_mask)
         last_hidden_state = outputs.last_hidden_state
         
-        # Mean Pooling
+        # mean pooling
         input_mask_expanded = attention_mask.unsqueeze(-1).expand(last_hidden_state.size()).float()
         sum_embeddings = (last_hidden_state * input_mask_expanded).sum(1)
         sum_mask = input_mask_expanded.sum(1)
