@@ -1,11 +1,14 @@
+# imports metrics for model evaluation
 from sklearn.metrics import classification_report, f1_score, accuracy_score
 
 def get_detailed_metrics(y_true, y_pred, label_names=None, prefix=""):
     
-    # returns metrics dict and report string
+    # returns macro f1 score and detailed metrics dictionary
     
+    # computes macro averaged f1 score
     f1_macro = f1_score(y_true, y_pred, average='macro', zero_division=0)
     
+    # generates comprehensive classification text report
     report_str = classification_report(y_true, y_pred, target_names=label_names, zero_division=0)
     
     metrics = {

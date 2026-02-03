@@ -2,9 +2,10 @@ import torch
 from torch.utils.data import Dataset
 import pandas as pd
 import numpy as np
+# imports standard libraries and torch tools
 from collections import Counter
 
-# mappings
+# integer mappings converting labels to ids
 EVASION_MAP_9 = {
     "Explicit": 0, "Dodging": 1, "Implicit": 2, "General": 3, "Deflection": 4,
     "Declining to answer": 5, "Claims ignorance": 6, "Clarification": 7, "Partial/half-answer": 8
@@ -37,8 +38,9 @@ TAXONOMY_PARENTS = {
     "Declining to answer": "Clear Non-Reply", "Claims ignorance": "Clear Non-Reply", "Clarification": "Clear Non-Reply"
 }
 
-# voting logic for disagreements
+# resolves conflicting label votes to single truth
 def resolve_evasion_vote(row):
+    # fetches votes from columns avoiding empty values
     votes = [str(row.get(f'annotator{i}', '')).strip() for i in range(1, 4)]
     votes = [v for v in votes if v and v.lower() != 'nan' and v != 'None' and v != '']
     
@@ -47,6 +49,7 @@ def resolve_evasion_vote(row):
     counts = Counter(votes)
     most_common = counts.most_common()
     
+    # returns label if agreement threshold is met
     if most_common[0][1] >= 2: return most_common[0][0]
     
     parents = [TAXONOMY_PARENTS.get(v, 'Unknown') for v in votes]
@@ -59,8 +62,9 @@ def resolve_evasion_vote(row):
             
     return votes[0]
 
-# dataset class
+# custom pytorch dataset handling tokenization and labels
 class ClarityDataset(Dataset):
+    # initializes dataset with dataframe and tokenizer
     def __init__(self, df, tokenizer, mode='clarity', max_len=512):
         self.df = df
         self.tokenizer = tokenizer
@@ -70,21 +74,24 @@ class ClarityDataset(Dataset):
     def __len__(self):
         return len(self.df)
 
+    # retrieves and processes item at index
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
         
-        # combine question and answer
+        # combines question and answer for tokenizer
         q_text = str(row.get('question', ""))
         a_text = str(row.get('interview_answer', ""))
         
+        # formats input with separator token
         text = f"{q_text} {self.tokenizer.sep_token} {a_text}"
         
+        # tokenizes text with padding and truncation
         encoding = self.tokenizer.encode_plus(
             text, add_special_tokens=True, max_length=self.max_len,
             padding='max_length', truncation=True, return_attention_mask=True, return_tensors='pt'
         )
         
-        # target label logic
+        # determines label id based on current mode
         label_id = 0
         evasion_str = str(row.get('final_evasion_str', 'Explicit'))
         
@@ -96,10 +103,11 @@ class ClarityDataset(Dataset):
         elif self.mode == 'evasion_5':
             label_id = EVASION_MAP_5.get(evasion_str, 0)
 
-        # ground truth for eval
+        # stores original ground truth for evaluation
         c_truth_str = str(row.get('clarity_label', 'Ambivalent'))
         clarity_truth_id = CLARITY_MAP.get(c_truth_str, 1)
 
+        # returns dictionary suitable for model input
         return {
             'input_ids': encoding['input_ids'].flatten(),
             'attention_mask': encoding['attention_mask'].flatten(),
@@ -107,15 +115,16 @@ class ClarityDataset(Dataset):
             'clarity_truth': torch.tensor(clarity_truth_id, dtype=torch.long)
         }
 
+# loads and prepares train test datasets
 def get_datasets(train_path, test_path, tokenizer, mode='clarity'):
     print(f"--- Loading Datasets (Mode: {mode}) ---")
     
-    # load train
+    # loads training data filtering valid labels
     train_df = pd.read_csv(train_path).fillna("")
     train_df['final_evasion_str'] = train_df['evasion_label']
     train_df = train_df[train_df['final_evasion_str'].isin(EVASION_MAP_9.keys())]
 
-    # load test
+    # loads test data applying democratic voting logic
     test_df = pd.read_csv(test_path).fillna("")
     print("Applying Democratic Voting Logic...")
     test_df['final_evasion_str'] = test_df.apply(resolve_evasion_vote, axis=1)
@@ -123,6 +132,7 @@ def get_datasets(train_path, test_path, tokenizer, mode='clarity'):
     
     print(f"Train size: {len(train_df)} | Test size: {len(test_df)}")
     
+    # initializes dataset objects for pytorch
     train_ds = ClarityDataset(train_df, tokenizer, mode=mode)
     test_ds = ClarityDataset(test_df, tokenizer, mode=mode)
     

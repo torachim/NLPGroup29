@@ -1,18 +1,21 @@
 import pandas as pd
 import os
+# imports for file handling and dataset loading
 from datasets import load_dataset
 
+# main entry point for data download
 def main():
     print("--- Loading Dataset from Hugging Face (Raw) ---")
     
-    # load dataset
+    # downloads raw dataset directly from huggingface hub
+    # attempts to load qevasion dataset
     try:
         ds = load_dataset("ailsntua/QEvasion")
     except Exception as e:
         print(f"Error loading dataset: {e}")
         return
 
-    # convert to pandas
+    # transforms dataset to pandas for easier manipulation
     train_df = ds['train'].to_pandas()
     test_df = ds['test'].to_pandas()
     
@@ -20,7 +23,8 @@ def main():
     print(f"Test Shape: {test_df.shape}")
     print(f"Columns: {train_df.columns.tolist()}")
     
-    # save to raw
+    # writes validated dataframes to raw csv files
+    # creates directory if it does not exist
     output_dir = "data/raw"
     os.makedirs(output_dir, exist_ok=True)
     
