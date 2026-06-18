@@ -133,7 +133,7 @@ CLARITY/
 
 ```bash
 # Clone & install
-git clone https://github.com/Imado30/CLARITY.git](https://github.com/torachim/NLPGroup29.git
+git clone https://github.com/torachim/NLPGroup29.git
 cd CLARITY
 pip install -r requirements.txt
 
